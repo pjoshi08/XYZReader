@@ -9,8 +9,9 @@
     android:clickable="true"
     android:focusable="true"
     android:foreground="?selectableItemBackground"
-    android:elevation="4dp"
-    android:transitionName="@string/transition">
+    android:elevation="1dp"
+    android:transitionName="@string/transition"
+    android:stateListAnimator="@animator/card_state_list_anim">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -23,7 +24,6 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:cropToPadding="false"
-            android:elevation="4dp"
             android:scaleType="centerCrop"/>
 
         <TextView

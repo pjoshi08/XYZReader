@@ -1,38 +1,41 @@
 package com.example.xyzreader.ui;
 
 import android.annotation.SuppressLint;
-import android.app.Fragment;
-import android.app.LoaderManager;
 import android.content.Intent;
-import android.content.Loader;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.graphics.Typeface;
-
-
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
-
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.support.design.button.MaterialButton;
 import android.support.design.widget.CollapsingToolbarLayout;
 import android.support.design.widget.FloatingActionButton;
+import android.support.v4.app.Fragment;
+import android.support.v4.app.LoaderManager;
 import android.support.v4.app.ShareCompat;
+import android.support.v4.content.Loader;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.graphics.Palette;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.Toolbar;
 import android.text.Html;
-import android.text.Spanned;
 import android.text.format.DateUtils;
 import android.text.method.LinkMovementMethod;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
+import android.view.ViewTreeObserver;
 import android.widget.TextView;
 
 import com.android.volley.VolleyError;
@@ -53,21 +56,27 @@ public class ArticleDetailFragment extends Fragment implements
     private static final String TAG = "ArticleDetailFragment";
 
     public static final String ARG_ITEM_ID = "item_id";
+    private static final String ARG_STARTING_ARTICLE_IMAGE_POSITION = "arg_starting_article_position";
+    private static final String ARG_ARTICLE_IMAGE_POSITION = "arg_article_position";
     private static final float PARALLAX_FACTOR = 1.25f;
 
     private Cursor mCursor;
     private long mItemId;
+    private String transitionName;
     private View mRootView;
     private int mMutedColor = 0xFF333333;
+    private String[] text;
 
     // View Binding
-    @BindView(R.id.photo) ImageView mPhotoView;
+    @BindView(R.id.photo) ThreeTwoImageView mPhotoView;
     @BindView(R.id.share_fab) FloatingActionButton shareFab;
     @BindView(R.id.toolbar) Toolbar toolbar;
     @BindView(R.id.collapsingToolbar) CollapsingToolbarLayout collapsingToolbarLayout;
     @BindView(R.id.article_title) TextView titleView;
     @BindView(R.id.article_byline) TextView bylineView;
     @BindView(R.id.article_body) TextView bodyView;
+    @BindView(R.id.article_body_recycler_view) RecyclerView recyclerView;
+    @BindView(R.id.button_more) MaterialButton readMore;
 
     @SuppressLint("SimpleDateFormat")
     private SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.sss");
@@ -77,6 +86,10 @@ public class ArticleDetailFragment extends Fragment implements
     // Most time functions can only handle 1902 - 2037
     private GregorianCalendar START_OF_EPOCH = new GregorianCalendar(2,1,1);
 
+    private int articlePosition;
+    private int startingPosition;
+    private boolean isTransitioning;
+
     /**
      * Mandatory empty constructor for the fragment manager to instantiate the
      * fragment (e.g. upon screen orientation changes).
@@ -84,9 +97,12 @@ public class ArticleDetailFragment extends Fragment implements
     public ArticleDetailFragment() {
     }
 
-    public static ArticleDetailFragment newInstance(long itemId) {
+    public static ArticleDetailFragment newInstance(long itemId, int position) {
         Bundle arguments = new Bundle();
         arguments.putLong(ARG_ITEM_ID, itemId);
+        arguments.putInt(ARG_ARTICLE_IMAGE_POSITION, position);
+        arguments.putInt(ARG_STARTING_ARTICLE_IMAGE_POSITION, position);
+
         ArticleDetailFragment fragment = new ArticleDetailFragment();
         fragment.setArguments(arguments);
         return fragment;
@@ -96,11 +112,37 @@ public class ArticleDetailFragment extends Fragment implements
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        startingPosition = getArguments().getInt(ARG_STARTING_ARTICLE_IMAGE_POSITION);
+        articlePosition = getArguments().getInt(ARG_ARTICLE_IMAGE_POSITION);
+        isTransitioning = savedInstanceState == null && startingPosition == articlePosition;
+
         if (getArguments().containsKey(ARG_ITEM_ID)) {
             mItemId = getArguments().getLong(ARG_ITEM_ID);
         }
 
         setHasOptionsMenu(true);
+    }
+
+    private void setUpThread() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String wholeText = Html.fromHtml(mCursor.getString(ArticleLoader.Query.BODY)
+                        .replaceAll("(\r\n|\n)", "<br />")).toString();
+                final String[] splitContent = wholeText.split("<br />");
+
+                if (splitContent.length > 0){
+                    Handler handler = new Handler(Looper.getMainLooper());
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            setUpRecyclerView(splitContent);
+                            recyclerView.setVisibility(View.VISIBLE);
+                        }
+                    });
+                }
+            }
+        }).start();
     }
 
     @Override
@@ -120,6 +162,9 @@ public class ArticleDetailFragment extends Fragment implements
         mRootView = inflater.inflate(R.layout.fragment_article_detail, container, false);
         ButterKnife.bind(this, mRootView);
 
+        transitionName = String.valueOf(articlePosition);
+        mPhotoView.setTransitionName(transitionName);
+
         shareFab.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -137,11 +182,21 @@ public class ArticleDetailFragment extends Fragment implements
         toolbar.setNavigationOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                getActivity().finish();
+                getActivity().finishAfterTransition();
             }
         });
 
         collapsingToolbarLayout.setTitleEnabled(true);
+
+        readMore.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                bodyView.setVisibility(View.GONE);
+                readMore.setVisibility(View.GONE);
+
+                setUpThread();
+            }
+        });
 
         return mRootView;
     }
@@ -193,37 +248,15 @@ public class ArticleDetailFragment extends Fragment implements
 
             }
 
-            Spanned a7;
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-
-                String b = mCursor.getString(ArticleLoader.Query.BODY);
-                String a = b.replaceAll(">", "&gt;");
-                String a1 = a.replaceAll("(\r\n){2}(?!(&gt;))", "<br><br>");
-                String a2 = a1.replaceAll("(\r\n)", " ");
-
-                //remove all text between [ and ]
-                String a3 = a2.replaceAll("\\[.*?\\]", "");
-
-                //put new line after i.e 1. Ebooks aren't marketing.
-                String a4 = a3.replaceAll("(\\d\\.\\s.*?\\.)", "$1<br>");
-
-                //make text between * * bold
-                String a5 = a4.replaceAll("\\*(.*?)\\*", "<b>$1</b>");
-
-                //remove all '>' from text such as 'are >'  but leave the first '>' in tact
-                String a6 = a5.replaceAll("(\\w\\s)&gt;", "$1");
-
-                a7 = Html.fromHtml(a6,Html.FROM_HTML_MODE_LEGACY);
-
-                bodyView.setText(a7);
-            } else
-                bodyView.setText(Html.fromHtml(mCursor.getString(ArticleLoader.Query.BODY)
+            bodyView.setText(Html.fromHtml(mCursor.getString(ArticleLoader.Query.BODY)
+                    .substring(0, 200)
                     .replaceAll("(\r\n|\n)", "<br />")));
 
             ImageLoaderHelper.getInstance(getActivity()).getImageLoader()
                     .get(mCursor.getString(ArticleLoader.Query.PHOTO_URL), new ImageLoader.ImageListener() {
                         @Override
                         public void onResponse(ImageLoader.ImageContainer imageContainer, boolean b) {
+                            //scheduleStartPostponedTransition(mPhotoView);
                             Bitmap bitmap = imageContainer.getBitmap();
                             if (bitmap != null) {
                                 try {
@@ -243,7 +276,9 @@ public class ArticleDetailFragment extends Fragment implements
                                                     collapsingToolbarLayout.setBackgroundColor(mMutedColor);
                                                     collapsingToolbarLayout.setContentScrimColor(mMutedColor);
                                                     getActivity().getWindow().setStatusBarColor(statusBarScrimColor);
+
                                                 } else if(map.containsKey("Vibrant") && map.containsKey("DarkVibrant")) {
+
                                                     mMutedColor = ((Palette.Swatch) map.get("Vibrant")).getRgb();
                                                     statusBarScrimColor = ((Palette.Swatch) map.get("DarkVibrant")).getRgb();
 
@@ -264,7 +299,7 @@ public class ArticleDetailFragment extends Fragment implements
 
                         @Override
                         public void onErrorResponse(VolleyError volleyError) {
-
+                            //scheduleStartPostponedTransition(mPhotoView);
                         }
                     });
         } else {
@@ -275,6 +310,15 @@ public class ArticleDetailFragment extends Fragment implements
         }
     }
 
+    private void setUpRecyclerView(String[] text) {
+        ArticleBodyAdapter adapter = new ArticleBodyAdapter(text);
+        recyclerView.setAdapter(adapter);
+        LinearLayoutManager layoutManager = new LinearLayoutManager(getContext(),
+                LinearLayoutManager.VERTICAL,
+                false);
+        recyclerView.setLayoutManager(layoutManager);
+    }
+
     @Override
     public Loader<Cursor> onCreateLoader(int i, Bundle bundle) {
         return ArticleLoader.newInstanceForItemId(getActivity(), mItemId);
@@ -282,6 +326,9 @@ public class ArticleDetailFragment extends Fragment implements
 
     @Override
     public void onLoadFinished(Loader<Cursor> cursorLoader, Cursor cursor) {
+
+        customStartPostponedEnterTransition();
+
         if (!isAdded()) {
             if (cursor != null) {
                 cursor.close();
@@ -297,6 +344,23 @@ public class ArticleDetailFragment extends Fragment implements
         }
 
         bindViews();
+    }
+
+    private void customStartPostponedEnterTransition(){
+        if (articlePosition == startingPosition) {
+            mPhotoView.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    mPhotoView.getViewTreeObserver().removeOnPreDrawListener(this);
+                    try {
+                        getActivity().startPostponedEnterTransition();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                    return true;
+                }
+            });
+        }
     }
 
     @Override
@@ -324,5 +388,67 @@ public class ArticleDetailFragment extends Fragment implements
             returnHashMap.put("LightMuted", palette.getLightMutedSwatch());
 
         return returnHashMap;
+    }
+
+    private static boolean isViewInBounds(@NonNull View container, @NonNull View view){
+        Rect containerBounds = new Rect();
+        container.getHitRect(containerBounds);
+        return view.getLocalVisibleRect(containerBounds);
+    }
+
+    @Nullable
+    public ThreeTwoImageView getArticlePhotoView(){
+        boolean isViewInBounds = false;
+        try {
+            isViewInBounds = isViewInBounds(getActivity().getWindow().getDecorView(), mPhotoView);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        if (isViewInBounds)
+            return mPhotoView;
+
+        return null;
+    }
+
+    public class ArticleBodyAdapter extends RecyclerView.Adapter<ArticleBodyAdapter.ViewHolder>{
+
+        private String[] body;
+
+        private ArticleBodyAdapter(String[] body){
+            this.body = body;
+        }
+
+        @NonNull
+        @Override
+        public ViewHolder onCreateViewHolder(@NonNull ViewGroup viewGroup, int position) {
+            LayoutInflater inflater = LayoutInflater.from(viewGroup.getContext());
+            View view = inflater.inflate(R.layout.article_body_item, viewGroup, false);
+            ViewHolder vh = new ViewHolder(view);
+            return vh;
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull ViewHolder viewHolder, int position) {
+            viewHolder.bodyView.setTypeface(Typeface.createFromAsset(getResources().getAssets(), "Rosario-Regular.ttf"));
+            viewHolder.bodyView.setText(body[position]);
+        }
+
+        @Override
+        public int getItemCount() {
+            if (body != null && body.length != 0)
+                return body.length;
+            return 0;
+        }
+
+        class ViewHolder extends RecyclerView.ViewHolder{
+
+            @BindView(R.id.article_body) TextView bodyView;
+
+            private ViewHolder(@NonNull View itemView) {
+                super(itemView);
+                ButterKnife.bind(this, itemView);
+            }
+        }
     }
 }

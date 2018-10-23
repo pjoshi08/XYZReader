@@ -9,5 +9,7 @@
     <string name="transition">image</string>
 
     <string name="up">Up</string>
-
+    <string name="no_internet">No Internet Connection!</string>
+    <string name="snacbar_action">Retry</string>
+    <string name="read_more">Read More</string>
 </resources>
